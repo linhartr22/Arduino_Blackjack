@@ -32,13 +32,17 @@
  * Right  - 5.
  */
 
+// Comment the following line to remove debug code.
+#define DEBUG
+
+ 
 // Initialize the LiquidCrystal.
 #include <LiquidCrystal.h>
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
-const byte lcdRowMax = 2;
-const byte lcdColMax = 16;
+#define lcdRowMax 2
+#define lcdColMax 16
 
-// Create suit symbols character maps.
+// Create suit symbols character maps (5 columns x 8 rows).
 byte heart[8] = {
   B01010,
   B11111,
@@ -115,42 +119,49 @@ byte ten[8] = {
 DFR_Key keypad;
 
 // Key constants.
-const byte keySelect = 1;
-const byte keyLeft = 2;
-const byte keyUp = 3;
-const byte keyDown = 4;
-const byte keyRight = 5;
+#define keySelect 1
+#define keyLeft 2
+#define keyUp 3
+#define keyDown 4
+#define keyRight 5
 
 // Init Deck.
-const byte cardIndexMax = 52;
-const byte rankIndex = 0;
-const byte suitIndex = 1;
-byte deck[cardIndexMax][2];
-byte cardIndex;
+#define deckIndexMax 51
+#define rankIndex 0
+#define suitIndex 1
+byte deck[deckIndexMax + 1][suitIndex + 1];
+byte deckIndex;
 
-// Init Hand.
-const byte handIndexMax = 6;
-const byte dealerIndex = 0;
-const byte playerIndex = 1;
-byte hand[2][handIndexMax][2];
-byte playerHandIndex;
-byte dealerHandIndex;
-boolean dealerHoleCard = true;  // Hole Card display state.
-byte handTotal[2][2];           // Need two totals per player for Ace duality.
+// Init Hands.
+#define dealerIndex 0
+#define playerIndex 1
+#define handIndexMax 5
+byte hand[playerIndex + 1][handIndexMax + 1][suitIndex + 1];
+byte handDealerIndex;
+byte handPlayerIndex;
+// Need two totals (soft, hard) per player for Ace duality.
+#define softIndex 0
+#define hardIndex 1
+byte handTotal[hardIndex + 1][playerIndex + 1];           
+// Hole card (face down) display state.
+boolean dealerHoleCard;
 
 // Init Bank.
 // Bank values are Dollars and Cents since a 1.5 Blackjack payout can result in fractional dollars.
-const long bankInit = 10000;
-long bank = bankInit;
-const long bankMax = 100000;
-const long betMin = 500;
-const long betMax = 5000;
-const long betInc = 500;
+#define bankInit 10000
+long bank;
+#define bankMax 100000
+#define betMin 500
+#define betMax 5000
+#define betInc 500
+int bet;
 
 // Setup.
 void setup() {
-  // Init serial for debugging.
-  Serial.begin(9600);
+  #if defined DEBUG
+    // Init serial for debugging.
+    Serial.begin(9600);
+  #endif
 
   // Init card characters.
   lcd.createChar(0, heart);
@@ -165,13 +176,14 @@ void setup() {
   lcd.begin(lcdColMax, lcdRowMax);
 
   // Create deck.
-  cardIndex = 0;
+  deckIndex = 0;
   for (byte suit = 0; suit <= 3 ; suit++) {
     for (byte rank = 1; rank <= 13; rank++) {
-      deck[cardIndex][rankIndex] = rank;
-      deck[cardIndex++][suitIndex] = suit;
+      deck[deckIndex][rankIndex] = rank;
+      deck[deckIndex++][suitIndex] = suit;
     }
   }
+  // deckIndex will trigger a shuffle
 
   // Seed random number generator.
   unsigned long seed=0, count=32;
@@ -179,34 +191,40 @@ void setup() {
     seed = (seed<<1) | (analogRead(0)&1);
   }
   randomSeed(seed);
+  
 }
 
 // Main loop.
 void loop() {
   // Display splash.
   displaySplash();
+  
+  // Init bank.
+  bank = bankInit;
+  // Init bet.
+  bet = betMin;
 
   // Got any money left?
   while (bank > 0 && bank < bankMax) {
     // Yes, Get bet.
-    int bet = getBet();
+    bet = getBet(bet);
 
     // Start a new round.
-    dealerHandIndex = 0;
-    playerHandIndex = 0;
+    handDealerIndex = 0;
+    handPlayerIndex = 0;
     dealerHoleCard = true;
 
-    // Clear Hand Totals.
-    handTotal[dealerIndex][0] = 0;
-    handTotal[dealerIndex][1] = 0;
-    handTotal[playerIndex][0] = 0;
-    handTotal[playerIndex][1] = 0;
+    // Clear hand totals.
+	handTotal[softIndex][handDealerIndex] = 0;
+	handTotal[hardIndex][handDealerIndex] = 0;
+	handTotal[softIndex][handPlayerIndex] = 0;
+	handTotal[hardIndex][handPlayerIndex] = 0;
 
     // Deal initial hand.
-    dealCard(playerIndex, playerHandIndex++);
-    dealCard(dealerIndex, dealerHandIndex++);
-    dealCard(playerIndex, playerHandIndex++);
-    dealCard(dealerIndex, dealerHandIndex++);
+    dealCard(playerIndex, handPlayerIndex++);
+    dealCard(dealerIndex, handDealerIndex++);
+    dealCard(playerIndex, handPlayerIndex++);
+    dealCard(dealerIndex, handDealerIndex++);
     displayHands();
 
     // Dealer Blackjack?
@@ -267,7 +285,7 @@ void loop() {
       }
       
       // Keep going until players reaches card limit, 21, busts or stays.
-      while (playerHandIndex < handIndexMax && handTotal[playerIndex][0] < 21 && key != keyDown);
+      while (playerHandIndex < handCardIndexMax && handTotal[playerIndex][0] < 21 && key != keyDown);
       
       // Player busted?
       if (handTotal[playerIndex][0] > 21) {
@@ -285,7 +303,7 @@ void loop() {
         displayHoleCard(false);
         
         // Dealer must stand on all 17's.
-        while (dealerHandIndex < handIndexMax && handTotal[dealerIndex][0] < 17 && handTotal[dealerIndex][1] < 17 ) {
+        while (dealerHandIndex < handCardIndexMax && handTotal[dealerIndex][0] < 17 && handTotal[dealerIndex][1] < 17 ) {
           // Hit dealer.
           dealCard(dealerIndex, dealerHandIndex++);
           displayHands();
@@ -386,42 +404,54 @@ void loop() {
 // Deal a card.
 void dealCard(byte player, byte card) {
   // Any cards left?
-  if (cardIndex >= cardIndexMax) {
+  if (deckIndex >= deckIndexMax) {
     // No, Shuffle the deck.
     lcd.clear();
     lcd.print("Shuffling");
-    byte cardTemp[2];
-    for (byte cardShuffle = 0; cardShuffle < cardIndexMax ; cardShuffle++) {
-      byte cardRandom = random(0,51);
+    // Init temporary card.
+    byte cardTemp[suitIndex + 1];
+    // Swap each card in the deck with a random card.
+    for (byte cardShuffle = 0; cardShuffle <= deckIndexMax ; cardShuffle++) {
+      // Init random card to swap (could be the same card).
+      byte cardRandom = random(0, deckIndexMax);
+      // Copy current card to temporary card.
       cardTemp[rankIndex] = deck[cardShuffle][rankIndex];
       cardTemp[suitIndex] = deck[cardShuffle][suitIndex];
+      // Copy random card to current card.
       deck[cardShuffle][rankIndex] = deck[cardRandom][rankIndex];
       deck[cardShuffle][suitIndex] = deck[cardRandom][suitIndex];
+      // Copy temporary card (current card) to random card.
       deck[cardRandom][rankIndex] = cardTemp[rankIndex];
       deck[cardRandom][suitIndex] = cardTemp[suitIndex];
     }
-    cardIndex = 0;
+    // Init card index.
+    deckIndex = 0;
+    // Slow humans.
     delay(2000);
+    // Display hands (to get rid of "Shuffling" message).
     displayHands();
   }
 
   // Deal card.
-  hand[player][card][rankIndex] = deck[cardIndex][rankIndex];
-  hand[player][card][suitIndex] = deck[cardIndex++][suitIndex];
+  hand[player][card][rankIndex] = deck[deckIndex][rankIndex];
+  hand[player][card][suitIndex] = deck[deckIndex++][suitIndex];
 
   // Update hand totals.
-  handTotal[player][0] += min(hand[player][card][rankIndex], 10);
-  handTotal[player][1] = handTotal[player][0];
+  handTotal[softIndex][player] += min(hand[player][card][rankIndex], 10);
+  handTotal[hardIndex][player] = handTotal[softIndex][player];
   for (byte cardCount = 0; cardCount <= card; cardCount++) {
     // Found an Ace?
     if (hand[player][cardCount][rankIndex] == 1) {
       // Yes
-      handTotal[player][1] += 10;
+      handTotal[hardIndex][player] += 10;
       // Only count one Ace.
       cardCount = card + 1;
     }
   }
-  Serial.println("Player #" + String(player) + "\tCard #" + String(card) + "\tCard: " + String(hand[player][card][rankIndex]) + "-" + String(hand[player][card][suitIndex]));
+  #if defined DEBUG
+    // Display card dealt.
+    Serial.println("Player #" + String(player) + "\tCard #" + String(card) + "\tCard: " + String(hand[player][card][rankIndex]) + "-" + String(hand[player][card][suitIndex]));
+  #endif
 }
 
 // Display hands.
@@ -429,27 +459,27 @@ void displayHands() {
   // Display dealer's hand.
   lcd.clear();
   lcd.print("D:");
-  displayHand(dealerIndex, dealerHandIndex);
+  displayHand(DealerIndex, handDealerIndex);
 
   // Display player's hand.
   lcd.setCursor(0, 1);
   lcd.print("P:");
-  displayHand(playerIndex, playerHandIndex);
+  displayHand(PlayerIndex, handPlayerIndex);
 }
 
 // Display hand.
-void displayHand(byte displayHandIndex, byte displayHandIndexMax) {
+void displayHand(byte displayHandIndex, byte displayHandCardIndex) {
   // Display cards.
-  for (byte card = 0; card < displayHandIndexMax; card++) {
+  for (byte card = 0; card < displayHandCardIndex; card++) {
     // Dealer Hole Card?
     if (displayHandIndex == dealerIndex && card == 0 && dealerHoleCard) {
-      // Display card back.
+      // Yes, display card back.
       lcd.write((uint8_t)4);
       lcd.write((uint8_t)5);
     }
     else {
-      // Display card rank.
-      switch (hand[displayHandIndex][card][rankIndex]) {
+      // No, display card rank.
+      switch (hand[displayHandIndex][card][deckRankIndex]) {
       case 1:
         lcd.print("A");
         break;
@@ -491,10 +521,9 @@ void displayBank(byte row) {
 }
 
 // Get bet.
-int getBet() {
+int getBet(int bet) {
   // Show player how much they have.
   displayBank(0);
-  int bet = betMin;
 
   // keyUp = Increase bet by bet increment.
   // keyDown = Decrease bet by bet increment.
